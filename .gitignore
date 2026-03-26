@@ -1,0 +1,34 @@
+node_modules/
+.env
+.venv
+env/
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+Origin_Server/.env
+node_modules/*
+.venv/
+*.json
+rough/
+
+help.txt
+
+# Dependencies
+node_modules/
+.venv/
+__pycache__/
+
+# Large Assets (Movies)
+Origin_Server/movies/*
+*.mp4
+*.webm
+
+# Environment / Secrets
+.env
+
+# OS Files
+.DS_Store
+Thumbs.db
+
