@@ -86,34 +86,29 @@ exports.deleteMovie = (req, res) => {
             }
         }
         console.log(`[Origin] Movie deleted: ${id}`);
-        // After successfully deleting the local file, broadcast the purge to the Traffic Manager
+        // After successfully deleting the local file, broadcast the purge directly to all Edge nodes
         try {
-            const TRAFFIC_MANAGER_URL = 'http://192.168.1.14:5000/purge/';
             const movieIdWithoutExt = id.split('.')[0]; // remove .mp4/.webm for the purge ID
             
             // Clean up tracking graph
             delete activeConnections[movieIdWithoutExt];
             delete connectionHistory[movieIdWithoutExt];
             
-            // Fire and forget the purge request to the traffic manager
-            axios.post(`${TRAFFIC_MANAGER_URL}${movieIdWithoutExt}`).catch(e => {
-                console.error(`[Origin] Failed to send purge signal to Traffic Manager for ${id}`);
-            });
-            console.log(`[Origin] Purge signal broadcasted for ${id} to Traffic Manager.`);
-
-            // NEW: Directly hit all Edge nodes as a fallback/to ensure network-wide invalidation
+            // Directly broadcast purge to all Edge nodes
             const EDGE_NODES = [
                 `http://192.168.1.11:4000/purge/${movieIdWithoutExt}`,
                 `http://192.168.1.12:4000/purge/${movieIdWithoutExt}`,
                 `http://192.168.1.13:4000/purge/${movieIdWithoutExt}`
             ];
             
-            EDGE_NODES.forEach(edge => {
-                axios.post(edge).catch(e => {
-                    // Suppress explicit errors on offline nodes to keep terminal clean
+            // Use Promise.allSettled for better error handling
+            Promise.allSettled(EDGE_NODES.map(url => axios.post(url).catch(() => null)))
+                .then(results => {
+                    const successful = results.filter(r => r.status === 'fulfilled').length;
+                    console.log(`[Origin] Purge broadcast complete: ${successful}/${EDGE_NODES.length} edge nodes updated`);
                 });
-            });
-            console.log(`[Origin] Purge signal broadcasted for ${id} strictly to all edge nodes.`);
+                
+            console.log(`[Origin] Purge signal broadcasted for ${id} to all edge nodes.`);
 
             // DB Logging
             PurgeLog.create({ type: 'SINGLE', movieId: movieIdWithoutExt }).catch(err => {
@@ -131,16 +126,16 @@ exports.deleteMovie = (req, res) => {
 exports.getMovie = async (req, res) => {
     let { id } = req.params;
     const rawIp = req.ip.replace('::ffff:', ''); 
-    
-    // IP Whitelist Security - Reject all non-Edge node requests
+ 
     const allowedNodes = [
-        '192.168.1.11', // Node A
-        '192.168.1.12', // Node B
-        '192.168.1.13', // Node C
-        '192.168.1.14', // Traffic Manager
-        '10.42.0.218',  // Test Node / User Phone
-        '127.0.0.1',    // Localhost fallback
-        '::1'           // Localhost IPv6 fallback
+        '10.49.147.78', // Node A
+        '10.49.147.233', // Node B
+        '', // Node C
+
+
+        '10.42.0.218',  // Test Node
+        '127.0.0.1',    // Localhost
+        '::1'           // Localhost
     ];
 
     if (!allowedNodes.includes(rawIp)) {
@@ -222,16 +217,26 @@ exports.getMovie = async (req, res) => {
     }, 2000);
 };
 
-// Initiate the "Fan-out" Purge via Traffic Manager [cite: 8, 62, 132]
+// Initiate direct purge to all Edge nodes
 exports.triggerPurge = async (req, res) => {
     const { id } = req.params;
-    const TRAFFIC_MANAGER_URL = 'http://192.168.1.14:5000/purge/'; // PC5 [cite: 67]
 
     try {
-        await axios.post(`${TRAFFIC_MANAGER_URL}${id}`);
-        res.json({ message: `Purge signal for ${id} sent to Traffic Manager.` });
+        // Directly broadcast purge to all Edge nodes
+        const EDGE_NODES = [
+            `http://192.168.1.11:4000/purge/${id}`,
+            `http://192.168.1.12:4000/purge/${id}`,
+            `http://192.168.1.13:4000/purge/${id}`
+        ];
+
+        const results = await Promise.allSettled(EDGE_NODES.map(url => axios.post(url).catch(() => null)));
+        const successful = results.filter(r => r.status === 'fulfilled').length;
+
+        console.log(`[Origin] Manual purge broadcast complete: ${successful}/${EDGE_NODES.length} edge nodes updated`);
+        res.json({ message: `Purge signal for ${id} sent to ${successful}/${EDGE_NODES.length} edge nodes.` });
     } catch (error) {
-        res.status(500).json({ error: "Could not reach Traffic Manager" });
+        console.error("[Origin] Error during manual purge:", error);
+        res.status(500).json({ error: "Could not complete purge operation" });
     }
 };
 
@@ -244,24 +249,22 @@ exports.purgeAll = async (req, res) => {
         console.error("[DB Error] Could not save Global Purge Log", err);
     }
 
-    const TRAFFIC_MANAGER_URL = 'http://192.168.1.14:5000/purge/all'; // PC5
+    // Directly broadcast global purge to all Edge nodes
+    const EDGE_NODES = [
+        'http://192.168.1.11:4000/purge/all',
+        'http://192.168.1.12:4000/purge/all',
+        'http://192.168.1.13:4000/purge/all'
+    ];
+
     try {
-        await axios.post(TRAFFIC_MANAGER_URL);
-        res.json({ message: `Global purge signal sent to Traffic Manager.` });
+        const results = await Promise.allSettled(EDGE_NODES.map(url => axios.post(url).catch(() => null)));
+        const successful = results.filter(r => r.status === 'fulfilled').length;
+        
+        console.log(`[Origin] Global purge broadcast complete: ${successful}/${EDGE_NODES.length} edge nodes updated`);
+        res.json({ message: `Global purge completed: ${successful}/${EDGE_NODES.length} edge nodes updated.` });
     } catch (error) {
-        console.error("[Origin] Traffic Manager offline, attempting fallback direct broadcast to edge nodes...");
-        
-        // Fallback: Manually hit the edge nodes directly since we are setting up a distributed network
-        const EDGE_NODES = [
-            'http://192.168.1.11:4000/purge/all',
-            'http://192.168.1.12:4000/purge/all',
-            'http://192.168.1.13:4000/purge/all'
-        ];
-        
-        Promise.allSettled(EDGE_NODES.map(url => axios.post(url).catch(() => null)))
-            .then(() => console.log("[Origin] Fallback emergency purge broadcast complete."));
-            
-        res.json({ message: `Traffic Manager unavailable. Broadcasting global purge directly to known Edge IPs.` });
+        console.error("[Origin] Error during global purge:", error);
+        res.status(500).json({ error: 'Error during global purge operation' });
     }
 };
 exports.dbTerminal = async (req, res) => {
