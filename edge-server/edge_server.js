@@ -15,7 +15,7 @@ const app = express();
 app.use(express.json());
 app.use(metricsMiddleware);
 
-// ─── CONFIG ────────────────────────────────────────────────────────────────
+// CONFIG 
 const CONFIG = {
   PORT: process.env.PORT || 4000,
   REDIS_URL: process.env.REDIS_URL || 'redis://localhost:6379',
@@ -25,14 +25,14 @@ const CONFIG = {
   MAX_CACHE_KEYS: parseInt(process.env.MAX_CACHE_KEYS || '100'),
 };
 
-// ─── REDIS CLIENT ───────────────────────────────────────────────────────────
+// REDIS CLIENT 
 const redisClient = redis.createClient({ url: CONFIG.REDIS_URL });
 const lru = new LRUTracker(CONFIG.MAX_CACHE_KEYS);
 
 redisClient.on('error', (err) => logger.error('Redis error', { err: err.message }));
 redisClient.on('connect', () => logger.info('Redis connected', { node: CONFIG.NODE_NAME }));
 
-// ─── MODULE 1 & 2 & 3: DATA API + CACHE LAYER + HIT/MISS LOGIC ─────────────
+// MODULE 1 & 2 & 3: DATA API + CACHE LAYER + HIT/MISS LOGIC 
 /**
  * GET /data/:id
  * 1. Check Redis for cached value (cache hit)
@@ -45,11 +45,11 @@ app.get('/data/:id', async (req, res) => {
   const startTime = Date.now();
 
   try {
-    // ── STEP 1: Check Redis Cache ────────────────────────────────────────
+    //  STEP 1: Check Redis Cache 
     const cached = await redisClient.get(`data:${id}`);
 
     if (cached) {
-      // ✅ CACHE HIT
+      //  CACHE HIT
       await simulateLatency('hit');           // Module 7: fast (0.1s)
       lru.touch(id);                          // update LRU order
       metrics.hits++;
@@ -68,18 +68,18 @@ app.get('/data/:id', async (req, res) => {
       });
     }
 
-    // ❌ CACHE MISS — fetch from Origin
+    //  CACHE MISS — fetch from Origin
     metrics.misses++;
     logger.info('cache miss', { id, node: CONFIG.NODE_NAME, status: 'MISS' });
 
-    // ── STEP 2: Fetch from Origin (PC1) ─────────────────────────────────
+    // STEP 2: Fetch from Origin (PC1)
     await simulateLatency('miss');            // Module 7: slow origin fetch
     const originResponse = await axios.get(`${CONFIG.ORIGIN_URL}/api/${id}`, {
       timeout: 5000,
     });
     const originData = originResponse.data;
 
-    // ── STEP 3 & 4: Store in Redis with TTL (60 seconds) ─────────────────
+    // STEP 3 & 4: Store in Redis with TTL (60 seconds) 
     await evictIfNeeded(id);                  // Module 5: LRU eviction check
     await redisClient.setEx(`data:${id}`, CONFIG.TTL_SECONDS, JSON.stringify(originData));
     lru.touch(id);
@@ -111,7 +111,7 @@ app.get('/data/:id', async (req, res) => {
   }
 });
 
-// ─── MODULE 5: LRU EVICTION ────────────────────────────────────────────────
+//  MODULE 5: LRU EVICTION 
 /**
  * If cache is at max capacity, evict the least recently used key before inserting.
  */
@@ -128,7 +128,7 @@ async function evictIfNeeded(incomingId) {
   }
 }
 
-// ─── MODULE 6: PURGE API ───────────────────────────────────────────────────
+ // MODULE 6: PURGE API 
 /**
  * DELETE /cache/:id
  * Called by Traffic Manager to force-invalidate a cached key.
@@ -155,7 +155,7 @@ app.delete('/cache/:id', async (req, res) => {
   }
 });
 
-// ─── NEW: PURGE FROM ORIGIN (POST) ─────────────────────────────
+//  NEW: PURGE FROM ORIGIN (POST) 
 app.post('/purge/:id', async (req, res) => {
   const { id } = req.params;
 
@@ -173,13 +173,13 @@ app.post('/purge/:id', async (req, res) => {
   }
 });
 
-// ─── NEW: GLOBAL PURGE ─────────────────────────────────────────
+//  NEW: GLOBAL PURGE 
 app.post('/purge/all', async (req, res) => {
   try {
     await redisClient.flushDb();
     lru.clear();
 
-    console.log("🔥 Global purge received");
+    console.log(" Global purge received");
 
     res.json({ message: "All cache cleared" });
   } catch (err) {
@@ -188,7 +188,7 @@ app.post('/purge/all', async (req, res) => {
 });
 
 
-// ─── METRICS ENDPOINT ──────────────────────────────────────────────────────
+//  METRICS ENDPOINT 
 app.get('/metrics', (req, res) => {
   const hitRate = metrics.hits + metrics.misses === 0
     ? 0
@@ -209,7 +209,22 @@ app.get('/metrics', (req, res) => {
   });
 });
 
-// ─── HEALTH CHECK ─────────────────────────────────────────────────────────
+//status 
+let activeConnections = 0;
+
+app.use((req, res, next) => {
+  activeConnections++;
+  res.on("finish", () => {
+    activeConnections--;
+  });
+  next();
+});
+
+app.get("/status", (req, res) => {
+  res.json({ activeConnections });
+});
+
+//  HEALTH CHECK 
 app.get('/health', async (req, res) => {
   const redisAlive = await redisClient.ping().then(() => true).catch(() => false);
   res.json({
@@ -220,12 +235,12 @@ app.get('/health', async (req, res) => {
   });
 });
 
-// ─── START ─────────────────────────────────────────────────────────────────
+//  START 
 (async () => {
   await redisClient.connect();
   app.listen(CONFIG.PORT, () => {
     logger.info('Edge server started', { node: CONFIG.NODE_NAME, port: CONFIG.PORT });
-    console.log(`\n🚀 Edge server [${CONFIG.NODE_NAME}] running on port ${CONFIG.PORT}`);
+    console.log(`\n Edge server [${CONFIG.NODE_NAME}] running on port ${CONFIG.PORT}`);
     console.log(`   Origin URL : ${CONFIG.ORIGIN_URL}`);
     console.log(`   Redis URL  : ${CONFIG.REDIS_URL}`);
     console.log(`   TTL        : ${CONFIG.TTL_SECONDS}s`);
