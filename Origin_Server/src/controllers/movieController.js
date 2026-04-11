@@ -1,13 +1,76 @@
 const path = require('path');
 const fs = require('fs');
+const net = require('net');
 const RequestLog = require('../models/RequestLog');
 const PurgeLog = require('../models/PurgeLog');
+const EdgeNode = require('../models/EdgeNode');
 const axios = require('axios');
+
+// --- AUTO-INITIALIZE DIRECTORY ---
+const moviesDir = path.join(__dirname, '../../movies');
+
+if (!fs.existsSync(moviesDir)) {
+    try {
+        // recursive: true ensures it creates parent folders if needed
+        fs.mkdirSync(moviesDir, { recursive: true });
+        // Give full permissions so Docker can write to it
+        fs.chmodSync(moviesDir, '777'); 
+        console.log(`[System] Created missing movies directory at: ${moviesDir}`);
+    } catch (err) {
+        console.error(`[Critical] Could not create movies directory:`, err);
+    }
+}
 
 // --- Live Tracking State ---
 const activeConnections = {};
 const connectionHistory = {};
 const accessLogs = [];
+
+const edgeNodeIps = [];
+const edgeNodeLabels = {
+    // '10.49.147.78': 'Node A',
+    // '10.49.147.233': 'Node B',
+    // '172.39.10.32': 'Node C'
+};
+const fixedNodeLabels = {
+    '127.0.0.1': 'Localhost',
+    '::1': 'Localhost'
+};
+
+// Load dynamic edge nodes from DB on startup
+(async () => {
+    try {
+        const nodes = await EdgeNode.find().sort({ timestamp: 1 });
+        nodes.forEach(node => {
+            if (!edgeNodeLabels[node.ip]) {
+                edgeNodeIps.push(node.ip);
+                edgeNodeLabels[node.ip] = node.nodeName;
+            }
+        });
+        console.log(`[Origin] Loaded ${nodes.length} dynamic edge nodes from DB`);
+    } catch (err) {
+        console.error('[DB Error] Could not load edge nodes:', err);
+    }
+})();
+
+function indexToNodeLabel(index) {
+    let n = index + 1;
+    let label = '';
+    while (n > 0) {
+        const rem = (n - 1) % 26;
+        label = String.fromCharCode(65 + rem) + label;
+        n = Math.floor((n - 1) / 26);
+    }
+    return `Node ${label}`;
+}
+
+function getNextNodeLabel() {
+    return indexToNodeLabel(edgeNodeIps.length);
+}
+
+function getEdgeNodePurgeUrls(movieIdOrAll) {
+    return edgeNodeIps.map(ip => `http://${ip}:5000/purge/${movieIdOrAll}`);
+}
 
 function initMovieTracking(id) {
     if (activeConnections[id] === undefined) activeConnections[id] = 0;
@@ -46,7 +109,54 @@ exports.getStats = (req, res) => {
     res.json({
         activeConnections,
         connectionHistory,
-        accessLogs
+        accessLogs,
+        nodeMap: {
+            ...fixedNodeLabels,
+            ...edgeNodeLabels
+        }
+    });
+};
+
+exports.addEdgeNode = async (req, res) => {
+    const rawIp = String(req.body?.ip || '').trim();
+
+    if (!rawIp) {
+        return res.status(400).json({ error: 'Edge IP is required' });
+    }
+
+    if (net.isIP(rawIp) !== 4) {
+        return res.status(400).json({ error: 'Please provide a valid IPv4 address' });
+    }
+
+    if (edgeNodeLabels[rawIp]) {
+        return res.status(200).json({
+            message: `Edge node already registered as ${edgeNodeLabels[rawIp]}`,
+            ip: rawIp,
+            nodeName: edgeNodeLabels[rawIp]
+        });
+    }
+
+    const nextLabel = getNextNodeLabel();
+    edgeNodeIps.push(rawIp);
+    edgeNodeLabels[rawIp] = nextLabel;
+
+    // Save to DB
+    try {
+        await EdgeNode.create({ ip: rawIp, nodeName: nextLabel });
+    } catch (err) {
+        console.error('[DB Error] Could not save edge node:', err);
+        // Remove from memory if DB save fails
+        edgeNodeIps.pop();
+        delete edgeNodeLabels[rawIp];
+        return res.status(500).json({ error: 'Failed to save edge node to database' });
+    }
+
+    console.log(`[Origin] Registered new edge server: ${rawIp} as ${nextLabel}`);
+
+    return res.status(201).json({
+        message: `Edge server registered successfully as ${nextLabel}`,
+        ip: rawIp,
+        nodeName: nextLabel
     });
 };
 
@@ -95,11 +205,7 @@ exports.deleteMovie = (req, res) => {
             delete connectionHistory[movieIdWithoutExt];
             
             // Directly broadcast purge to all Edge nodes
-            const EDGE_NODES = [
-                `http://192.168.1.11:4000/purge/${movieIdWithoutExt}`,
-                `http://192.168.1.12:4000/purge/${movieIdWithoutExt}`,
-                `http://192.168.1.13:4000/purge/${movieIdWithoutExt}`
-            ];
+            const EDGE_NODES = getEdgeNodePurgeUrls(movieIdWithoutExt);
             
             // Use Promise.allSettled for better error handling
             Promise.allSettled(EDGE_NODES.map(url => axios.post(url).catch(() => null)))
@@ -128,14 +234,8 @@ exports.getMovie = async (req, res) => {
     const rawIp = req.ip.replace('::ffff:', ''); 
  
     const allowedNodes = [
-        '10.49.147.78', // Node A
-        '10.49.147.233', // Node B
-        '', // Node C
-
-
-        '10.42.0.218',  // Test Node
-        '127.0.0.1',    // Localhost
-        '::1'           // Localhost
+        ...edgeNodeIps,
+        ...Object.keys(fixedNodeLabels)
     ];
 
     if (!allowedNodes.includes(rawIp)) {
@@ -223,11 +323,7 @@ exports.triggerPurge = async (req, res) => {
 
     try {
         // Directly broadcast purge to all Edge nodes
-        const EDGE_NODES = [
-            `http://192.168.1.11:4000/purge/${id}`,
-            `http://192.168.1.12:4000/purge/${id}`,
-            `http://192.168.1.13:4000/purge/${id}`
-        ];
+        const EDGE_NODES = getEdgeNodePurgeUrls(id);
 
         const results = await Promise.allSettled(EDGE_NODES.map(url => axios.post(url).catch(() => null)));
         const successful = results.filter(r => r.status === 'fulfilled').length;
@@ -250,11 +346,7 @@ exports.purgeAll = async (req, res) => {
     }
 
     // Directly broadcast global purge to all Edge nodes
-    const EDGE_NODES = [
-        'http://192.168.1.11:4000/purge/all',
-        'http://192.168.1.12:4000/purge/all',
-        'http://192.168.1.13:4000/purge/all'
-    ];
+    const EDGE_NODES = getEdgeNodePurgeUrls('all');
 
     try {
         const results = await Promise.allSettled(EDGE_NODES.map(url => axios.post(url).catch(() => null)));
@@ -275,6 +367,24 @@ exports.dbTerminal = async (req, res) => {
             result = await PurgeLog.find().sort({ timestamp: -1 }).limit(20);
         } else if (command === 'show requestlogs') {
             result = await RequestLog.find().sort({ timestamp: -1 }).limit(20);
+        } else if (command === 'show edgenodes') {
+            result = await EdgeNode.find().sort({ timestamp: -1 });
+        } else if (command.startsWith('delete edgenode ')) {
+            const ip = command.replace('delete edgenode ', '').trim();
+            if (!ip) {
+                result = 'Please provide an IP address. Usage: delete edgenode <ip>';
+            } else {
+                const deleted = await EdgeNode.findOneAndDelete({ ip });
+                if (deleted) {
+                    // Remove from memory
+                    const index = edgeNodeIps.indexOf(ip);
+                    if (index > -1) edgeNodeIps.splice(index, 1);
+                    delete edgeNodeLabels[ip];
+                    result = `Deleted edge node: ${ip} (${deleted.nodeName})`;
+                } else {
+                    result = `Edge node with IP ${ip} not found.`;
+                }
+            }
         } else if (command.startsWith('clear')) {
             if (command.includes('purgelogs')) {
                  await PurgeLog.deleteMany({});
@@ -282,11 +392,14 @@ exports.dbTerminal = async (req, res) => {
             } else if (command.includes('requestlogs')) {
                  await RequestLog.deleteMany({});
                  result = 'Purged all RequestLogs.';
+            } else if (command.includes('edgenodes')) {
+                 await EdgeNode.deleteMany({});
+                 result = 'Purged all EdgeNodes.';
             } else { 
                 result = 'Invalid clear command.';
             }
         } else {
-             result = 'Unknown Command. Available: show purgelogs, show requestlogs, clear purgelogs, clear requestlogs';
+             result = 'Unknown Command. Available: show purgelogs, show requestlogs, show edgenodes, delete edgenode <ip>, clear purgelogs, clear requestlogs, clear edgenodes';
         }
         res.json({ output: JSON.stringify(result, null, 2) });
     } catch(err) {

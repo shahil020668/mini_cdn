@@ -1,0 +1,27 @@
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: Origin_Server/Dockerfile
+    ports:
+      - "4000:4000"
+    environment:
+      - MONGO_URI=mongodb://mongo:27017/origin_db
+    depends_on:
+      - mongo
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - movies_data:/app/movies
+
+  mongo:
+    image: mongo:5.0
+    ports:
+      - "27018:27017"
+    volumes:
+      - mongo_data:/data/db
+      
+
+volumes:
+  mongo_data:
+  movies_data:

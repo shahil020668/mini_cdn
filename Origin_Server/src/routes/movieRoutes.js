@@ -16,6 +16,7 @@ const storage = multer.diskStorage({
         cb(null, `${id}${ext}`);
     }
 });
+
 const upload = multer({ storage: storage });
 
 // Get all available movies
@@ -23,6 +24,9 @@ router.get('/', movieController.getAllMovies);
 
 // Live Stats Dashboard Endpoint (Must be above /:id)
 router.get('/stats', movieController.getStats);
+
+// Register a new edge node IP
+router.post('/edge-nodes', movieController.addEdgeNode);
 
 // Upload a movie
 router.post('/upload', upload.single('movie'), movieController.uploadMovie);

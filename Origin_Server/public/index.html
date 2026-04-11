@@ -31,8 +31,12 @@
                 <h1 class="text-2xl font-bold text-white">CDN Control Center</h1>
                 <p class="text-slate-500 text-sm italic">Member 1: Origin Server</p>
             </div>
-            <div class="flex gap-4">
+            <div class="flex gap-3 items-center">
                 <div class="px-4 py-2 card rounded-lg text-xs font-bold text-green-400">PC1: ONLINE</div>
+                <div class="flex items-center gap-2">
+                    <input id="edgeIpInput" type="text" placeholder="Add Edge IP (e.g. 192.168.1.14)" class="w-56 bg-[#0c0e12] border border-[#2d323d] px-3 py-2 rounded-lg focus:outline-none focus:border-indigo-500 text-xs">
+                    <button onclick="addEdgeServer()" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition-all">ADD EDGE</button>
+                </div>
                 <button onclick="triggerGlobalPurge()" class="px-6 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-bold transition-all">EMERGENCY PURGE ALL</button>
             </div>
         </header>
@@ -151,7 +155,7 @@
                 <div id="dbTermOut" class="terminal p-4 h-[500px] overflow-y-auto text-[16px] text-green-400 space-y-1 whitespace-pre-wrap">Connected to Local Origin Atlas DB... Type 'help' to see commands.</div>
                 <div class="border-t border-white/5 bg-[#0c0e12] flex items-center p-2">
                     <span class="text-green-500 font-mono text-sm px-2">node@db:~$</span>
-                    <input id="dbTermIn" type="text" class="w-full bg-transparent border-none text-green-400 font-mono text-sm focus:outline-none" placeholder="show purgelogs | show requestlogs | clear purgelogs" onkeypress="handleDbCommand(event)">
+                    <input id="dbTermIn" type="text" class="w-full bg-transparent border-none text-green-400 font-mono text-sm focus:outline-none" placeholder="show purgelogs | show requestlogs | show edgenodes | delete edgenode <ip> | clear purgelogs" onkeypress="handleDbCommand(event)">
                 </div>
             </div>
         </div>
@@ -290,17 +294,8 @@
         // --- Live Stats & Graph Logic ---
         const charts = {};
 
-        // Node IP mapping to Friendly Names
-        const nodeMap = {
-            "10.49.147.78": "Node A",
-            "10.49.147.233": "Node B",
-            "": "Node C",
-
-
-            "10.42.0.218": "Test Node",
-            "127.0.0.1": "Localhost",
-            "::1": "Localhost"
-        };
+        // Node IP mapping to Friendly Names (loaded from backend)
+        const nodeMap = {};
 
         function initChart() {
             // Replaced by dynamic init logic
@@ -310,6 +305,10 @@
             try {
                 const res = await fetch('/api/stats');
                 const data = await res.json();
+
+                if (data.nodeMap) {
+                    Object.assign(nodeMap, data.nodeMap);
+                }
 
                 // Update Charts
                 const container = document.getElementById('charts-container');
@@ -393,8 +392,10 @@
                         if (logEntry.status.includes('STREAMING')) statusColor = "text-blue-400";
                         
                         // Map IP to Name
+                        console.log('Log entry edgeIp:', logEntry.edgeIp);
                         const rawIp = logEntry.edgeIp.replace('::ffff:', ''); // Clean IPv6 wrapping
                         const displayName = nodeMap[rawIp] || rawIp;
+                        console.log('Raw IP:', rawIp, 'Display Name:', displayName, 'NodeMap entry:', nodeMap[rawIp]);
                         let bgClass = nodeMap[rawIp] ? "bg-indigo-500/20 text-indigo-300" : "bg-slate-800 text-blue-300";
                         
                         return `
@@ -413,6 +414,38 @@
             }
         }
 
+        async function addEdgeServer() {
+            const input = document.getElementById('edgeIpInput');
+            const ip = input.value.trim();
+
+            if (!ip) {
+                alert('Please enter an Edge Server IP address.');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/edge-nodes', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ip })
+                });
+
+                const result = await response.json();
+
+                if (!response.ok) {
+                    alert(result.error || 'Failed to add edge server.');
+                    return;
+                }
+
+                log(`Edge Server added: ${result.ip} mapped as ${result.nodeName}`);
+                input.value = '';
+                fetchLiveStats();
+            } catch (err) {
+                console.error(err);
+                alert('Could not add edge server. Please try again.');
+            }
+        }
+
         async function handleDbCommand(e) {
             if (e.key === 'Enter') {
                 const input = document.getElementById('dbTermIn');
@@ -425,7 +458,7 @@
                 input.value = '';
 
                 if (command === 'help') {
-                    out.innerHTML += `\nAvailable commands:\n  show purgelogs   - View recent network purge signals\n  show requestlogs - View recent Edge cache misses\n  clear purgelogs  - Empty the purge logs collection\n  clear requestlogs- Empty the request logs collection`;
+                    out.innerHTML += `\nAvailable commands:\n  show purgelogs   - View recent network purge signals\n  show requestlogs - View recent Edge cache misses\n  show edgenodes   - View registered edge nodes\n  delete edgenode <ip> - Delete a specific edge node by IP\n  clear purgelogs  - Empty the purge logs collection\n  clear requestlogs- Empty the request logs collection\n  clear edgenodes  - Empty the edge nodes collection`;
                     out.scrollTop = out.scrollHeight;
                     return;
                 }
