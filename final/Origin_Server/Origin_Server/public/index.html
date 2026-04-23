@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CDN Origin Controller - Owner Only</title>
+    
+    <script src="/tailwind.js"></script>
+    
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <style>
+        /* Note: If you are offline, this font will not load. 
+           Consider downloading the .woff2 file for a true local CDN */
+        @import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap');
+        
+        .terminal { font-family: 'Fira Code', monospace; }
+        body { background-color: #0c0e12; color: #e2e8f0; }
+        .card { background-color: #1a1d24; border: 1px solid #2d323d; }
+        
+        /* Fallback: If Tailwind fails, this at least keeps things readable */
+        ul { list-style: none; padding: 0; }
+    </style>
+</head>
+<body class="p-8">
+
+    <div class="max-w-7xl mx-auto">
+        <!-- Header -->
+        <header class="flex justify-between items-center mb-10 pb-6 border-b border-white/5">
+            <div>
+                <h1 class="text-2xl font-bold text-white">CDN Control Center</h1>
+                <p class="text-slate-500 text-sm italic">Member 1: Origin Server</p>
+            </div>
+            <div class="flex gap-3 items-center">
+                <div class="px-4 py-2 card rounded-lg text-xs font-bold text-green-400">PC1: ONLINE</div>
+                <div class="flex items-center gap-2">
+                    <input id="edgeIpInput" type="text" placeholder="Add Edge IP (e.g. 192.168.1.14)" class="w-56 bg-[#0c0e12] border border-[#2d323d] px-3 py-2 rounded-lg focus:outline-none focus:border-indigo-500 text-xs">
+                    <button onclick="addEdgeServer()" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition-all">ADD EDGE</button>
+                </div>
+                <button onclick="triggerGlobalPurge()" class="px-6 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-bold transition-all">EMERGENCY PURGE ALL</button>
+            </div>
+        </header>
+
+        <!-- Main Layout Grid -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            
+            <!-- Column 1: Controls -->
+            <div class="lg:col-span-1 space-y-8">
+                <!-- Content Upload -->
+                <div class="card p-6 rounded-2xl">
+                    <h3 class="text-lg font-bold mb-6 flex items-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-blue-500"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                        Upload Movie
+                    </h3>
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-[10px] font-bold text-slate-500 uppercase mb-1">Movie ID / Name</label>
+                            <input id="upId" type="text" class="w-full bg-[#0c0e12] border border-[#2d323d] p-3 rounded-xl focus:outline-none focus:border-blue-500 text-sm" placeholder="e.g. movie4">
+                        </div>
+                        <div>
+                            <label class="block text-[10px] font-bold text-slate-500 uppercase mb-1">Movie File (MP4/WEBM)</label>
+                            <input id="upFile" type="file" accept="video/mp4,video/webm" class="w-full bg-[#0c0e12] border border-[#2d323d] p-3 rounded-xl focus:outline-none focus:border-blue-500 text-sm">
+                        </div>
+                        <button onclick="uploadMovie()" class="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl transition-all">UPLOAD MOVIE</button>
+                    </div>
+                </div>
+
+                <!-- Available Movies -->
+                <div class="card p-6 rounded-2xl">
+                    <h3 class="text-lg font-bold mb-4 flex items-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-purple-500"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>
+                        Available Movies
+                    </h3>
+                    <ul id="movie-list" class="space-y-2 text-sm text-slate-300 max-h-48 overflow-y-auto pr-2">
+                        <li class="text-slate-500 italic">Loading movies...</li>
+                    </ul>
+                </div>
+            </div>
+
+            <!-- Column 2: Monitoring (Logs) -->
+            <div class="lg:col-span-1 space-y-8">
+
+                <!-- Live Edge Access Monitor -->
+                <div class="card p-6 rounded-2xl mb-8">
+                    <h3 class="text-lg font-bold mb-6 flex items-center justify-between">
+                        <span class="flex items-center gap-2">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-green-500"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                            Live Edge Access Monitor
+                        </span>
+                        <span class="text-xs text-slate-500 font-normal">Real-time pings from Edges</span>
+                    </h3>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-sm">
+                            <thead class="text-[10px] text-slate-500 uppercase border-b border-white/5">
+                                <tr>
+                                    <th class="pb-3">Timestamp</th>
+                                    <th class="pb-3">Node</th>
+                                    <th class="pb-3">Movie ID</th>
+                                    <th class="pb-3">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="log-table" class="text-slate-300">
+                                <!-- Real-time logs will be injected here -->
+                                <tr><td colspan="4" class="text-center py-4 text-slate-500 italic">Waiting for Edge requests...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Terminal Output -->
+                <div class="bg-black border border-[#2d323d] rounded-2xl overflow-hidden shadow-2xl">
+                    <div class="bg-[#1a1d24] px-4 py-2 border-b border-white/5 flex items-center justify-between">
+                        <span class="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Origin Server Logs</span>
+                        <div class="flex gap-1.5">
+                            <div class="w-2 h-2 rounded-full bg-red-500"></div>
+                            <div class="w-2 h-2 rounded-full bg-yellow-500"></div>
+                            <div class="w-2 h-2 rounded-full bg-green-500"></div>
+                        </div>
+                    </div>
+                    <div id="terminal" class="terminal p-4 h-48 overflow-y-auto text-xs text-blue-400 space-y-1">
+                        <div>> Origin Server initialized successfully...</div>
+                        <div>> Ready to broadcast purge signals to edge nodes...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Column 3: Live Transfers Graph -->
+            <div class="lg:col-span-1 space-y-8">
+                <div class="card p-6 rounded-2xl">
+                    <h3 class="text-lg font-bold mb-4 flex items-center justify-between">
+                        <span class="flex items-center gap-2">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-blue-500"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+                            Live Transfers
+                        </span>
+                    </h3>
+                    <div id="charts-container" class="grid grid-cols-1 gap-4 max-h-[40rem] overflow-y-auto pr-2">
+                        <div class="text-slate-500 italic text-sm p-4 w-full text-center">Loading charts...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Database Terminal Section -->
+        <div class="mt-8">
+            <div class="bg-black border border-[#2d323d] rounded-2xl overflow-hidden shadow-2xl">
+                <div class="bg-[#1a1d24] px-4 py-2 border-b border-white/5 flex items-center justify-between">
+                    <span class="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-green-500"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>
+                        Origin DB Interactive Terminal
+                    </span>
+                    <div class="flex gap-1.5 hover:cursor-pointer" onclick="document.getElementById('dbTermOut').innerHTML=''">
+                        <span class="text-[10px] text-slate-500">CLEAR</span>
+                    </div>
+                </div>
+                <div id="dbTermOut" class="terminal p-4 h-[500px] overflow-y-auto text-[16px] text-green-400 space-y-1 whitespace-pre-wrap">Connected to Local Origin Atlas DB... Type 'help' to see commands.</div>
+                <div class="border-t border-white/5 bg-[#0c0e12] flex items-center p-2">
+                    <span class="text-green-500 font-mono text-sm px-2">node@db:~$</span>
+                    <input id="dbTermIn" type="text" class="w-full bg-transparent border-none text-green-400 font-mono text-sm focus:outline-none" placeholder="show purgelogs | show requestlogs | show edgenodes | delete edgenode <ip> | clear purgelogs" onkeypress="handleDbCommand(event)">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function log(msg) {
+            const t = document.getElementById('terminal');
+            const div = document.createElement('div');
+            div.innerText = `> ${new Date().toLocaleTimeString()}: ${msg}`;
+            t.appendChild(div);
+            t.scrollTop = t.scrollHeight;
+        }
+
+        async function uploadMovie() {
+            const id = document.getElementById('upId').value;
+            const fileInput = document.getElementById('upFile');
+            
+            if(!id || !fileInput.files.length) return alert("Movie ID and File are required");
+            
+            const file = fileInput.files[0];
+            log(`Uploading Movie [${id}] (${file.name})...`);
+            
+            const formData = new FormData();
+            formData.append('id', id); // Text fields MUST be appended before files for multer to read them in time
+            formData.append('movie', file);
+            
+            try {
+                const response = await fetch('/api/upload', { 
+                    method: 'POST', 
+                    body: formData 
+                });
+                
+                const result = await response.json();
+                
+                if(response.ok) {
+                    log(`Movie Published successfully to Origin.`);
+                    // Add to table
+                    const row = `<tr><td class="py-3 font-mono text-[11px]">${new Date().toLocaleTimeString()}</td><td><span class="px-2 py-0.5 bg-red-500/10 text-red-400 rounded text-[10px] font-bold">SYSTEM</span></td><td class="font-bold">${id}</td><td><span class="text-blue-400 font-bold italic">UPLOADED</span></td></tr>`;
+                    document.getElementById('log-table').innerHTML = row + document.getElementById('log-table').innerHTML;
+                    
+                    // Refresh movie list
+                    fetchMovies();
+                } else {
+                    log(`Upload failed: ${result.error}`);
+                    alert(`Upload failed: ${result.error}`);
+                }
+            } catch (error) {
+                log(`Upload Error: Could not connect to API`);
+                console.error(error);
+            }
+        }
+
+        async function triggerGlobalPurge() {
+            if(confirm("This will clear ALL Edge caches globally. Proceed?")) {
+                log("EMERGENCY PURGE INITIATED.");
+                log("Broadcasting purge signal directly to all edge nodes...");
+                try {
+                    const response = await fetch('/api/purge-all', { method: 'POST' });
+                    const result = await response.json();
+                    if(response.ok) {
+                        log(`Purge success: ${result.message}`);
+                        // Add to table
+                        const row = `<tr><td class="py-3 font-mono text-[11px]">${new Date().toLocaleTimeString()}</td><td><span class="px-2 py-0.5 bg-red-500/10 text-red-400 rounded text-[10px] font-bold">SYSTEM</span></td><td class="font-bold text-red-400">ALL MOVIES</td><td><span class="text-red-400 font-bold italic">GLOBAL PURGE CACHE</span></td></tr>`;
+                        document.getElementById('log-table').innerHTML = row + document.getElementById('log-table').innerHTML;
+                    } else {
+                        log(`Failed to purge: ${result.error}`);
+                    }
+                } catch(e) {
+                    log("Error executing global purge");
+                }
+            }
+        }
+
+        async function fetchMovies() {
+            try {
+                const response = await fetch('/api/');
+                const data = await response.json();
+                const list = document.getElementById('movie-list');
+                
+                if (data.movies && data.movies.length > 0) {
+                    list.innerHTML = data.movies.map(m => 
+                        `<li class="bg-[#0c0e12] border border-[#2d323d] px-3 py-2 rounded-lg font-mono flex items-center justify-between">
+                            <span>🎬 ${m}</span>
+                            <button data-filename="${m.replace(/"/g, '&quot;')}" onclick="deleteMovie(this.dataset.filename)" class="text-red-500 hover:text-red-400 hover:bg-white/5 p-1.5 rounded transition" title="Delete Movie">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>
+                            </button>
+                        </li>`
+                    ).join('');
+                } else {
+                    list.innerHTML = '<li class="text-slate-500 italic">No movies found in directory.</li>';
+                }
+            } catch (error) {
+                console.error("Failed to fetch movies", error);
+                document.getElementById('movie-list').innerHTML = '<li class="text-red-500 italic">Error loading movies.</li>';
+            }
+        }
+
+        async function deleteMovie(filename) {
+            console.log('deleteMovie called with', filename);
+            if(!confirm(`Are you sure you want to completely delete '${filename}' from the Origin Server?`)) return;
+            
+            log(`Deleting movie [${filename}]...`);
+            try {
+                const response = await fetch(`/api/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+                
+                if(response.ok) {
+                    log(`Movie [${filename}] deleted successfully.`);
+                    // Optionally broadcast a purge to ensure edge nodes drop it too
+                    log(`Broadcasting PURGE signal for deleted movie...`);
+                    
+                    fetchMovies(); // refresh list
+                } else {
+                    const errorText = await response.text();
+                    try {
+                        const data = JSON.parse(errorText);
+                        log(`Failed to delete: ${data.error}`);
+                        alert(`Failed to delete: ${data.error}`);
+                    } catch {
+                        log(`Failed to delete (HTTP ${response.status}): Endpoint not found or Server error.`);
+                    }
+                }
+            } catch(e) {
+                log(`Error occurred while deleting movie.`);
+                console.error(e);
+            }
+        }
+
+        // Call on initial load
+        window.onload = () => {
+            fetchMovies();
+            initChart();
+            setInterval(fetchLiveStats, 1000);
+        };
+
+        // --- Live Stats & Graph Logic ---
+        const charts = {};
+
+        // Node IP mapping to Friendly Names (loaded from backend)
+        const nodeMap = {};
+
+        function initChart() {
+            // Replaced by dynamic init logic
+        }
+
+        async function fetchLiveStats() {
+            try {
+                const res = await fetch('/api/stats');
+                const data = await res.json();
+
+                if (data.nodeMap) {
+                    Object.assign(nodeMap, data.nodeMap);
+                }
+
+                // Update Charts
+                const container = document.getElementById('charts-container');
+                const activeMovies = Object.keys(data.connectionHistory);
+                
+                // Clear initial placeholder if exists
+                if (container.innerHTML.includes('Loading charts...')) {
+                    container.innerHTML = '';
+                }
+
+                // Remove charts for deleted movies
+                for (let id in charts) {
+                    if (!activeMovies.includes(id)) {
+                        charts[id].destroy();
+                        delete charts[id];
+                        const wrapper = document.getElementById(`chart-wrapper-${id}`);
+                        if(wrapper) wrapper.remove();
+                    }
+                }
+
+                // Add or update charts
+                activeMovies.forEach((id, index) => {
+                    if(!charts[id]) {
+                        // Create chart element dynamically
+                        const wrapper = document.createElement('div');
+                        wrapper.id = `chart-wrapper-${id}`;
+                        wrapper.className = "bg-[#0c0e12] border border-[#2d323d] p-3 rounded-xl";
+                        wrapper.innerHTML = `
+                            <h4 class="text-xs font-bold text-slate-400 mb-2 truncate">📊 ${id}</h4>
+                            <div class="w-full h-24">
+                                <canvas id="chart-${id}"></canvas>
+                            </div>
+                        `;
+                        container.appendChild(wrapper);
+
+                        const ctx = document.getElementById(`chart-${id}`).getContext('2d');
+                        const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
+                        const strokeColor = colors[index % colors.length];
+
+                        charts[id] = new Chart(ctx, {
+                            type: 'line',
+                            data: {
+                                labels: new Array(20).fill(''),
+                                datasets: [{
+                                    data: data.connectionHistory[id],
+                                    borderColor: strokeColor,
+                                    backgroundColor: strokeColor + '20',
+                                    borderWidth: 2,
+                                    fill: true,
+                                    tension: 0.4,
+                                    pointRadius: 0
+                                }]
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                animation: { duration: 0 },
+                                scales: {
+                                    y: { beginAtZero: true, suggestedMax: 3, grid: { color: '#2d323d' }, ticks: { color: '#64748b', stepSize: 1 } },
+                                    x: { grid: { display: false }, ticks: { display: false } }
+                                },
+                                plugins: { legend: { display: false } }
+                            }
+                        });
+                    } else {
+                        // Update existing chart
+                        charts[id].data.datasets[0].data = data.connectionHistory[id];
+                        charts[id].update();
+                    }
+                });
+
+                // Update Table
+                const tbody = document.getElementById('log-table');
+                if (data.accessLogs.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="4" class="text-center py-4 text-slate-500 italic">No recent edge requests...</td></tr>';
+                } else {
+                    tbody.innerHTML = data.accessLogs.map(logEntry => {
+                        // Dynamic color handling based on status
+                        let statusColor = "text-yellow-500";
+                        if (logEntry.status.includes('COMPLETED')) statusColor = "text-green-400";
+                        if (logEntry.status.includes('STREAMING')) statusColor = "text-blue-400";
+                        
+                        // Map IP to Name
+                        console.log('Log entry edgeIp:', logEntry.edgeIp);
+                        const rawIp = logEntry.edgeIp.replace('::ffff:', ''); // Clean IPv6 wrapping
+                        const displayName = nodeMap[rawIp] || rawIp;
+                        console.log('Raw IP:', rawIp, 'Display Name:', displayName, 'NodeMap entry:', nodeMap[rawIp]);
+                        let bgClass = nodeMap[rawIp] ? "bg-indigo-500/20 text-indigo-300" : "bg-slate-800 text-blue-300";
+                        
+                        return `
+                        <tr class="border-b border-white/5 bg-[#1a1d24]">
+                            <td class="py-3 font-mono text-[11px]">${logEntry.time}</td>
+                            <td><span class="px-2 py-0.5 ${bgClass} rounded text-[10px] font-bold">${displayName}</span></td>
+                            <td class="font-bold text-slate-200">${logEntry.movieId}</td>
+                            <td><span class="${statusColor} font-bold text-[11px]">${logEntry.status}</span></td>
+                        </tr>
+                        `;
+                    }).join('');
+                }
+            } catch (err) {
+                console.error("Poll error:", err);
+                // Silently ignore poll errors if server restarts
+            }
+        }
+
+        async function addEdgeServer() {
+            const input = document.getElementById('edgeIpInput');
+            const ip = input.value.trim();
+
+            if (!ip) {
+                alert('Please enter an Edge Server IP address.');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/edge-nodes', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ip })
+                });
+
+                const result = await response.json();
+
+                if (!response.ok) {
+                    alert(result.error || 'Failed to add edge server.');
+                    return;
+                }
+
+                log(`Edge Server added: ${result.ip} mapped as ${result.nodeName}`);
+                input.value = '';
+                fetchLiveStats();
+            } catch (err) {
+                console.error(err);
+                alert('Could not add edge server. Please try again.');
+            }
+        }
+
+        async function handleDbCommand(e) {
+            if (e.key === 'Enter') {
+                const input = document.getElementById('dbTermIn');
+                const out = document.getElementById('dbTermOut');
+                const command = input.value.trim().toLowerCase();
+                
+                if (!command) return;
+
+                out.innerHTML += `\n<span class="text-white">node@db:~$</span> ${command}`;
+                input.value = '';
+
+                if (command === 'help') {
+                    out.innerHTML += `\nAvailable commands:\n  show purgelogs   - View recent network purge signals\n  show requestlogs - View recent Edge cache misses\n  show edgenodes   - View registered edge nodes\n  delete edgenode <ip> - Delete a specific edge node by IP\n  clear purgelogs  - Empty the purge logs collection\n  clear requestlogs- Empty the request logs collection\n  clear edgenodes  - Empty the edge nodes collection`;
+                    out.scrollTop = out.scrollHeight;
+                    return;
+                }
+
+                try {
+                    const response = await fetch('/api/db-terminal', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ command })
+                    });
+                    
+                    const data = await response.json();
+                    out.innerHTML += `\n${data.output}`;
+                } catch (err) {
+                    out.innerHTML += `\n<span class="text-red-500">Error: Could not execute command. Connection lost.</span>`;
+                }
+                out.scrollTop = out.scrollHeight;
+            }
+        }
+    </script>
+</body>
+</html>
