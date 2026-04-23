@@ -4,9 +4,17 @@ services:
       context: ..
       dockerfile: Origin_Server/Dockerfile
     ports:
-      - "4000:4000"
+      - "${ORIGIN_HOST_PORT:-4000}:4000"
     environment:
-      - MONGO_URI=mongodb://mongo:27017/origin_db
+      MONGO_URI: ${MONGO_URI:-mongodb://mongo:27017/origin_db}
+      EDGE_PURGE_PORT: ${EDGE_PURGE_PORT:-3002}
+      EDGE_DOCKER_LOOPBACK_HOST: ${EDGE_DOCKER_LOOPBACK_HOST:-host.docker.internal}
+      EDGE_INDIA_URL: ${EDGE_INDIA_URL:-http://host.docker.internal:3002}
+      EDGE_CHINA_URL: ${EDGE_CHINA_URL:-http://10.17.163.141:3002}
+      EDGE_RUSSIA_URL: ${EDGE_RUSSIA_URL:-http://192.168.1.23:3002}
+      EDGE_PURGE_ENDPOINTS: ${EDGE_PURGE_ENDPOINTS:-http://host.docker.internal:3002,http://10.17.163.1413002,http://192.168.1.23:3002}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - mongo
     volumes:
@@ -16,12 +24,14 @@ services:
 
   mongo:
     image: mongo:5.0
-    ports:
-      - "27018:27017"
     volumes:
       - mongo_data:/data/db
-      
+
 
 volumes:
   mongo_data:
   movies_data:
+  edge_cache:
+
+
+

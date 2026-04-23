@@ -36,6 +36,23 @@ const fixedNodeLabels = {
     '127.0.0.1': 'Localhost',
     '::1': 'Localhost'
 };
+const RUNNING_IN_DOCKER = fs.existsSync('/.dockerenv');
+const EDGE_PURGE_PORT = process.env.EDGE_PURGE_PORT || '3002';
+const EDGE_DOCKER_LOOPBACK_HOST = process.env.EDGE_DOCKER_LOOPBACK_HOST || 'host.docker.internal';
+const DEFAULT_EDGE_PURGE_HOST = RUNNING_IN_DOCKER ? EDGE_DOCKER_LOOPBACK_HOST : '127.0.0.1';
+const EDGE_REGION_ENDPOINTS = [
+    process.env.EDGE_INDIA_URL,
+    process.env.EDGE_CHINA_URL,
+    process.env.EDGE_RUSSIA_URL
+].filter(Boolean);
+const DEFAULT_EDGE_PURGE_ENDPOINT = `http://${DEFAULT_EDGE_PURGE_HOST}:${EDGE_PURGE_PORT}`;
+const EDGE_PURGE_ENDPOINTS = String(
+    process.env.EDGE_PURGE_ENDPOINTS ||
+    (EDGE_REGION_ENDPOINTS.length > 0 ? EDGE_REGION_ENDPOINTS.join(',') : DEFAULT_EDGE_PURGE_ENDPOINT)
+)
+    .split(',')
+    .map(value => value.trim())
+    .filter(Boolean);
 
 // Load dynamic edge nodes from DB on startup
 (async () => {
@@ -68,8 +85,75 @@ function getNextNodeLabel() {
     return indexToNodeLabel(edgeNodeIps.length);
 }
 
+function normalizePurgeHost(host) {
+    if (!host) {
+        return host;
+    }
+
+    if (RUNNING_IN_DOCKER && (host === '127.0.0.1' || host === 'localhost')) {
+        return EDGE_DOCKER_LOOPBACK_HOST;
+    }
+
+    return host;
+}
+
+function toPurgeBaseFromIp(ip) {
+    const host = normalizePurgeHost(ip);
+    return `http://${host}:${EDGE_PURGE_PORT}`;
+}
+
+function toPurgeBaseFromUrl(rawUrl) {
+    try {
+        const parsed = new URL(rawUrl);
+        const host = normalizePurgeHost(parsed.hostname);
+        const port = parsed.port || (parsed.protocol === 'https:' ? '443' : '80');
+        return `${parsed.protocol}//${host}:${port}`;
+    } catch (err) {
+        console.warn(`[Origin] Invalid EDGE_PURGE_ENDPOINTS entry skipped: ${rawUrl}`);
+        return null;
+    }
+}
+
 function getEdgeNodePurgeUrls(movieIdOrAll) {
-    return edgeNodeIps.map(ip => `http://${ip}:5000/purge/${movieIdOrAll}`);
+    const edgeBases = new Set();
+
+    edgeNodeIps.forEach(ip => {
+        edgeBases.add(toPurgeBaseFromIp(ip));
+    });
+
+    EDGE_PURGE_ENDPOINTS.forEach(endpoint => {
+        const purgeBase = toPurgeBaseFromUrl(endpoint);
+        if (purgeBase) {
+            edgeBases.add(purgeBase);
+        }
+    });
+
+    const encodedMovieId = encodeURIComponent(movieIdOrAll);
+    return Array.from(edgeBases).map(base => `${base}/purge/${encodedMovieId}`);
+}
+
+async function broadcastPurgeRequests(edgeUrls) {
+    const results = await Promise.allSettled(
+        edgeUrls.map(url => axios.post(url, null, { timeout: 5000 }))
+    );
+
+    const successful = results.filter(r => r.status === 'fulfilled').length;
+    const failedTargets = [];
+    results.forEach((result, index) => {
+        if (result.status === 'rejected') {
+            failedTargets.push({
+                url: edgeUrls[index],
+                error: result.reason?.message || 'Request failed'
+            });
+        }
+    });
+
+    return {
+        successful,
+        total: edgeUrls.length,
+        failed: failedTargets.length,
+        failedTargets
+    };
 }
 
 function initMovieTracking(id) {
@@ -206,12 +290,25 @@ exports.deleteMovie = (req, res) => {
             
             // Directly broadcast purge to all Edge nodes
             const EDGE_NODES = getEdgeNodePurgeUrls(movieIdWithoutExt);
+
+            if (EDGE_NODES.length === 0) {
+                console.warn('[Origin] No edge purge targets configured. Skipping movie purge broadcast.');
+                return;
+            }
             
             // Use Promise.allSettled for better error handling
-            Promise.allSettled(EDGE_NODES.map(url => axios.post(url).catch(() => null)))
-                .then(results => {
-                    const successful = results.filter(r => r.status === 'fulfilled').length;
-                    console.log(`[Origin] Purge broadcast complete: ${successful}/${EDGE_NODES.length} edge nodes updated`);
+            broadcastPurgeRequests(EDGE_NODES)
+                .then(({ successful, total, failed, failedTargets }) => {
+                    console.log(`[Origin] Purge broadcast complete: ${successful}/${total} edge nodes updated`);
+                    if (failed > 0) {
+                        console.warn(`[Origin] Purge broadcast had ${failed} failed edge nodes`);
+                        failedTargets.forEach(target => {
+                            console.warn(`[Origin] Failed purge target: ${target.url} -> ${target.error}`);
+                        });
+                    }
+                })
+                .catch(error => {
+                    console.error('[Origin] Purge broadcast failed:', error.message);
                 });
                 
             console.log(`[Origin] Purge signal broadcasted for ${id} to all edge nodes.`);
@@ -325,11 +422,24 @@ exports.triggerPurge = async (req, res) => {
         // Directly broadcast purge to all Edge nodes
         const EDGE_NODES = getEdgeNodePurgeUrls(id);
 
-        const results = await Promise.allSettled(EDGE_NODES.map(url => axios.post(url).catch(() => null)));
-        const successful = results.filter(r => r.status === 'fulfilled').length;
+        if (EDGE_NODES.length === 0) {
+            return res.status(400).json({ error: 'No edge purge targets configured' });
+        }
 
-        console.log(`[Origin] Manual purge broadcast complete: ${successful}/${EDGE_NODES.length} edge nodes updated`);
-        res.json({ message: `Purge signal for ${id} sent to ${successful}/${EDGE_NODES.length} edge nodes.` });
+        const { successful, total, failed, failedTargets } = await broadcastPurgeRequests(EDGE_NODES);
+
+        console.log(`[Origin] Manual purge broadcast complete: ${successful}/${total} edge nodes updated`);
+        if (failed > 0) {
+            console.warn(`[Origin] Manual purge had ${failed} failed edge nodes`);
+        }
+        res.json({
+            message: `Purge signal for ${id} sent to ${successful}/${total} edge nodes.`,
+            successful,
+            total,
+            failed,
+            failedTargets,
+            targets: EDGE_NODES
+        });
     } catch (error) {
         console.error("[Origin] Error during manual purge:", error);
         res.status(500).json({ error: "Could not complete purge operation" });
@@ -348,12 +458,25 @@ exports.purgeAll = async (req, res) => {
     // Directly broadcast global purge to all Edge nodes
     const EDGE_NODES = getEdgeNodePurgeUrls('all');
 
+    if (EDGE_NODES.length === 0) {
+        return res.status(400).json({ error: 'No edge purge targets configured' });
+    }
+
     try {
-        const results = await Promise.allSettled(EDGE_NODES.map(url => axios.post(url).catch(() => null)));
-        const successful = results.filter(r => r.status === 'fulfilled').length;
+        const { successful, total, failed, failedTargets } = await broadcastPurgeRequests(EDGE_NODES);
         
-        console.log(`[Origin] Global purge broadcast complete: ${successful}/${EDGE_NODES.length} edge nodes updated`);
-        res.json({ message: `Global purge completed: ${successful}/${EDGE_NODES.length} edge nodes updated.` });
+        console.log(`[Origin] Global purge broadcast complete: ${successful}/${total} edge nodes updated`);
+        if (failed > 0) {
+            console.warn(`[Origin] Global purge had ${failed} failed edge nodes`);
+        }
+        res.json({
+            message: `Global purge completed: ${successful}/${total} edge nodes updated.`,
+            successful,
+            total,
+            failed,
+            failedTargets,
+            targets: EDGE_NODES
+        });
     } catch (error) {
         console.error("[Origin] Error during global purge:", error);
         res.status(500).json({ error: 'Error during global purge operation' });
